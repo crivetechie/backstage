@@ -13,9 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { bundleFileWithRefs, BundlerRead, BundlerResolveUrl } from './bundle';
 import { mockServices } from '@backstage/backend-test-utils';
 import { ScmIntegrations } from '@backstage/integration';
+import { bundleFileWithRefs, BundlerRead, BundlerResolveUrl } from './bundle';
 
 const specification = `
 openapi: "3.0.0"
@@ -329,4 +329,68 @@ paths:
     expect(resolveUrl).toHaveBeenCalledWith(relativePath, baseUrl);
     expect(read).toHaveBeenCalledWith(expectedUrl);
   });
+});
+
+describe('bundleFileWithRefs - Testing getRelativePath scenarios GitHub taking into account the number of levels of folders in the cwd', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  const scmIntegrations = ScmIntegrations.fromConfig(mockServices.rootConfig());
+
+  const resolveUrl: BundlerResolveUrl = jest.fn(
+    (url: string, base: string): string => {
+      return scmIntegrations.resolveUrl({ url, base });
+    },
+  );
+
+  const read: BundlerRead = jest.fn(async (url: string) => {
+    return Buffer.from(url);
+  });
+
+  // determine how many levels of folders we have in cwd()
+  const cwd = process.cwd();
+  const cwdLevels = cwd.split('/').length - 1;
+
+  it.each([
+    ['with cwdLevels -1 folders', cwdLevels - 1],
+    ['with cwdLevels folders', cwdLevels],
+    ['with cwdLevels + 1 folders', cwdLevels + 1],
+  ])(
+    'should handle the relative path when refUrl traverses up to the root %s',
+    async (_, folderCount) => {
+      const exampleBaseUrl = `https://github.com/crivetechie/test-repo/blob/main/${Array.from(
+        { length: folderCount },
+        (unused, i) => `folder${i + 1}`,
+      ).join('/')}/asyncapi.yaml`;
+
+      const refUrl = `${Array(folderCount)
+        .fill('../')
+        .join('')}schema/payload.json`;
+      console.log('Ref URL:', refUrl);
+
+      const fileWithRefs = `
+      asyncapi: 2.5.0
+      info:
+        version: 1.0.0
+        title: Sample API
+        description: A sample API to illustrate OpenAPI concepts
+      channels:
+        my-topic:
+          subscribe:
+            message:
+              schemaFormat: "application/schema+json;version=draft-07"
+              payload:
+                $ref : "${refUrl}"
+`;
+
+      const expectedUrl =
+        'https://github.com/crivetechie/test-repo/tree/main/schema/payload.json';
+
+      await bundleFileWithRefs(fileWithRefs, exampleBaseUrl, read, resolveUrl);
+
+      expect(resolveUrl).toHaveBeenCalledWith(refUrl, exampleBaseUrl);
+      expect(read).toHaveBeenCalledWith(expectedUrl);
+    },
+  );
 });
